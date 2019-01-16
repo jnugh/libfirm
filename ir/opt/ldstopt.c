@@ -28,6 +28,7 @@
 #include "iropt_t.h"
 #include "iroptimize.h"
 #include "irtools.h"
+#include "irouts.h"
 #include "panic.h"
 #include "set.h"
 #include "target_t.h"
@@ -56,6 +57,7 @@ typedef enum changes_t {
 typedef struct walk_env_t {
 	struct obstack obst;    /**< list of all stores */
 	changes_t      changes; /**< a bitmask of graph changes */
+	ir_nodehashmap_t iteration_map;
 } walk_env_t;
 
 /** A Load/Store info. */
@@ -92,6 +94,11 @@ typedef enum block_flags_t {
 typedef struct block_info_t {
 	block_flags_t flags;  /**< flags for the block */
 } block_info_t;
+
+typedef struct iteration_info_t {
+	bool visited;
+} iteration_info_t;
+
 
 /** the master visited flag for loop detection. */
 static unsigned master_visited;
@@ -156,6 +163,48 @@ static void update_exc(ldst_info_t *info, ir_node *block, int pos)
 	assert(info->exc_block == NULL);
 	info->exc_block = block;
 	info->exc_idx   = pos;
+}
+
+void mark_node_optimize_iteration(ir_node *n, walk_env_t *env) 
+{
+	iteration_info_t *info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, n);
+	if(info == NULL) {
+		info = OALLOC(&env->obst, iteration_info_t);
+		memset(info, 0, sizeof(*info));
+		ir_nodehashmap_insert(&env->iteration_map, n, info);
+	}
+	info->visited = true;
+}
+
+bool barrier_blocked(ir_node *n, walk_env_t *env) 
+{
+	if(get_irn_n_outs(n) < 2 || !n->mem_dom.idom) {
+		/* If there is only one edge coming into the node we can safely traverse further - no path is missing */
+		return false;
+	}
+	iteration_info_t *info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, n->mem_dom.idom);
+	if(info == NULL || !info->visited) {
+		/* If the dominator is not part of the map it has not been visited, 
+		 * we started on a distinct path between dominator and sync and can safely traverse this path */
+		return false;
+	}
+
+	printf("Check pred of %li because %li was vidited\n", n->node_nr, n->mem_dom.idom->node_nr);
+
+	/* If any predecessor has not been visited we need to wait for the other paths to be traversed to continue safely */
+	for(int i = 0; i < get_irn_n_outs(n); i++) {
+		iteration_info_t *in_info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, get_irn_out(n, i));
+		if(!is_Deleted(get_irn_out(n, i))) {
+			printf("NOT DELETED! %li \n", get_irn_out(n, i)->node_nr);
+		}
+		if((in_info == NULL || !in_info->visited) && !is_Deleted(get_irn_out(n, i))) {
+			printf("Blocked %li\n", n->node_nr);
+			return true;
+		}
+	}
+	printf("Released %li\n", n->node_nr);
+
+	return false;
 }
 
 /**
@@ -456,6 +505,7 @@ static changes_t replace_load(ir_node *load, ir_node *new_value)
 	/* loads without user should already be optimized away */
 	assert(info->projs[pn_Load_res] != NULL);
 	exchange(info->projs[pn_Load_res], new_value);
+									printf("KILL %li\n", load->node_nr);
 
 	kill_and_reduce_usage(load);
 	return res | DF_CHANGED;
@@ -628,17 +678,22 @@ static bool try_update_ptr_CopyB(track_load_env_t *env, ir_node *copyb)
  *
  * INC_MASTER() must be called before dive into
  */
-static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start)
+static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, walk_env_t *wenv)
 {
+	if(barrier_blocked(start, wenv)) {
+		return NO_CHANGES;
+	}
+
 	ir_node  *load      = env->load;
 	ir_type  *load_type = get_Load_type(load);
 	unsigned  load_size = get_mode_size_bytes(get_Load_mode(load));
 
 	ir_node   *node = start;
+	mark_node_optimize_iteration(node, wenv);
 	changes_t  res  = NO_CHANGES;
 	for (;;) {
 		ldst_info_t *node_info = (ldst_info_t *)get_irn_link(node);
-
+		printf("Follow %li\n", start->node_nr);
 		if (is_Store(node)) {
 			/* first try load-after-store */
 			changes_t changes = try_load_after_store(env, node);
@@ -653,6 +708,10 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start)
 			ir_alias_relation  rel        = get_alias_relation(
 				ptr, store_type, store_size,
 				env->ptr, load_type, load_size);
+			
+			mark_node_optimize_iteration(get_Store_mem(node), wenv);
+			mark_node_optimize_iteration(skip_Proj(get_Store_mem(node)), wenv);
+
 			/* if the might be an alias, we cannot pass this Store */
 			if (rel != ir_no_alias)
 				break;
@@ -660,6 +719,10 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start)
 		} else if (is_Load(node)) {
 			/* try load-after-load */
 			changes_t changes = try_load_after_load(env, node);
+
+			mark_node_optimize_iteration(get_Load_mem(node), wenv);
+			mark_node_optimize_iteration(skip_Proj(get_Load_mem(node)), wenv);
+
 			if (changes != NO_CHANGES)
 				return changes | res;
 			/* we can skip any load */
@@ -694,10 +757,15 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start)
 				dst, type, size,
 				env->ptr, load_type, load_size);
 			/* possible alias => we cannot continue */
+			mark_node_optimize_iteration(get_CopyB_mem(node), wenv);
+			mark_node_optimize_iteration(skip_Proj(get_CopyB_mem(node)), wenv);
 			if (rel != ir_no_alias)
 				break;
 			node = skip_Proj(get_CopyB_mem(node));
 		} else if (is_irn_const_memory(node)) {
+			mark_node_optimize_iteration(get_memop_mem(node), wenv);
+			mark_node_optimize_iteration(skip_Proj(get_memop_mem(node)), wenv);
+
 			node = skip_Proj(get_memop_mem(node));
 		} else {
 			/* be conservative about any other node and assume aliasing
@@ -712,10 +780,13 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start)
 	}
 
 	if (is_Sync(node)) {
+		assure_irg_properties(get_irn_irg(node), IR_GRAPH_PROPERTY_NO_UNREACHABLE_CODE
+										| IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE
+										| IR_GRAPH_PROPERTY_CONSISTENT_OUT_EDGES);
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
 			ir_node *skipped = skip_Proj(in);
-			res |= follow_load_mem_chain(env, skipped);
+			res |= follow_load_mem_chain(env, skipped, wenv);
 			if ((res & ~NODES_CREATED) != NO_CHANGES)
 				break;
 		}
@@ -778,7 +849,7 @@ static ir_entity *find_entity(ir_node *ptr)
  *
  * @param load  the Load node
  */
-static changes_t optimize_load(ir_node *load)
+static changes_t optimize_load(ir_node *load, walk_env_t *wenv)
 {
 	const ldst_info_t *info = (ldst_info_t *)get_irn_link(load);
 	changes_t          res  = NO_CHANGES;
@@ -798,6 +869,7 @@ static changes_t optimize_load(ir_node *load)
 		assert(info->projs[pn_Load_X_regular] == NULL);
 		/* the value is never used and we don't care about exceptions, remove */
 		exchange(info->projs[pn_Load_M], mem);
+		printf("KILL %li\n", load->node_nr);
 		kill_and_reduce_usage(load);
 		return res | DF_CHANGED;
 	}
@@ -816,6 +888,7 @@ static changes_t optimize_load(ir_node *load)
 			ldst_info_t *info = (ldst_info_t*)get_irn_link(load);
 			exchange(info->projs[pn_Load_res], val);
 			exchange(info->projs[pn_Load_M], get_Load_mem(load));
+			printf("KILL %li\n", load->node_nr);
 			kill_and_reduce_usage(load);
 			return DF_CHANGED;
 		}
@@ -839,7 +912,7 @@ static changes_t optimize_load(ir_node *load)
 	 */
 	INC_MASTER();
 	env.load = load;
-	res = follow_load_mem_chain(&env, skip_Proj(mem));
+	res = follow_load_mem_chain(&env, skip_Proj(mem), wenv);
 	return res;
 }
 
@@ -864,8 +937,11 @@ static bool is_partially_same(ir_node *small, ir_node *large)
  * INC_MASTER() must be called before dive into
  */
 static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
-                                        bool had_split)
+                                        bool had_split, walk_env_t *wenv)
 {
+	if(barrier_blocked(start, wenv)) {
+		return NO_CHANGES;
+	}
 	changes_t    res   = NO_CHANGES;
 	ldst_info_t *info  = (ldst_info_t *)get_irn_link(store);
 	ir_node     *ptr   = get_Store_ptr(store);
@@ -876,8 +952,11 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 	ir_node     *block = get_nodes_block(store);
 
 	ir_node *node = start;
+	mark_node_optimize_iteration(node, wenv);
+
 	while (node != store) {
 		ldst_info_t *node_info = (ldst_info_t *)get_irn_link(node);
+		
 
 		/*
 		 * BEWARE: one might think that checking the modes is useless, because
@@ -912,6 +991,7 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 					DB((dbg, LEVEL_1, "  killing store %+F (override by %+F)\n",
 					    node, store));
 					exchange(node_info->projs[pn_Store_M], get_Store_mem(node));
+					printf("KILL %li\n", node->node_nr);
 					kill_and_reduce_usage(node);
 					return DF_CHANGED;
 				}
@@ -932,6 +1012,7 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 					DB((dbg, LEVEL_1, "  killing store %+F (override by %+F)\n",
 					    node, store));
 					exchange(info->projs[pn_Store_M], mem);
+					printf("KILL %li\n", store->node_nr);
 					kill_and_reduce_usage(store);
 					return DF_CHANGED;
 				}
@@ -950,6 +1031,7 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 				    "  killing store %+F (read %+F from same address)\n",
 				    store, node));
 				exchange(info->projs[pn_Store_M], mem);
+				printf("KILL %li\n", store->node_nr);
 				kill_and_reduce_usage(store);
 				return DF_CHANGED;
 			}
@@ -964,6 +1046,9 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 			ir_alias_relation  rel         = get_alias_relation(
 				store_ptr, store_type, store_size,
 				ptr, type, size);
+
+			mark_node_optimize_iteration(get_Store_mem(node), wenv);
+			mark_node_optimize_iteration(skip_Proj(get_Store_mem(node)), wenv);
 			/* if the might be an alias, we cannot pass this Store */
 			if (rel != ir_no_alias)
 				break;
@@ -975,6 +1060,10 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 			ir_alias_relation  rel       = get_alias_relation(
 				load_ptr, load_type, load_size,
 				ptr, type, size);
+
+			mark_node_optimize_iteration(get_Load_mem(node), wenv);
+			mark_node_optimize_iteration(skip_Proj(get_Load_mem(node)), wenv);
+
 			if (rel != ir_no_alias)
 				break;
 
@@ -986,6 +1075,7 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 			ir_alias_relation  src_rel    = get_alias_relation(
 				copyb_src, copyb_type, copyb_size,
 				ptr, type, size);
+
 			if (src_rel != ir_no_alias)
 				break;
 			ir_node           *copyb_dst = get_CopyB_dst(node);
@@ -1006,10 +1096,13 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 	}
 
 	if (is_Sync(node)) {
+		assure_irg_properties(get_irn_irg(node), IR_GRAPH_PROPERTY_NO_UNREACHABLE_CODE
+										| IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE
+										| IR_GRAPH_PROPERTY_CONSISTENT_OUT_EDGES);
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
 			ir_node *skipped = skip_Proj(in);
-			res |= follow_store_mem_chain(store, skipped, true);
+			res |= follow_store_mem_chain(store, skipped, true, wenv);
 			if (res != NO_CHANGES)
 				break;
 		}
@@ -1022,7 +1115,7 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
  *
  * @param store  the Store node
  */
-static changes_t optimize_store(ir_node *store)
+static changes_t optimize_store(ir_node *store, walk_env_t *wenv)
 {
 	if (get_Store_volatility(store) == volatility_is_volatile)
 		return NO_CHANGES;
@@ -1038,7 +1131,7 @@ static changes_t optimize_store(ir_node *store)
 	/* follow the memory chain as long as there are only Loads */
 	INC_MASTER();
 
-	return follow_store_mem_chain(store, skip_Proj(mem), false);
+	return follow_store_mem_chain(store, skip_Proj(mem), false, wenv);
 }
 
 /**
@@ -1071,8 +1164,11 @@ static bool ptr_is_in_struct(ir_node *ptr, ir_type *ptr_type,
  *   the CopyB nodes are offset against each other are not handled.
  */
 static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
-                                        bool had_split)
+                                        bool had_split, walk_env_t *wenv)
 {
+	if(barrier_blocked(start, wenv)) {
+		return NO_CHANGES;
+	}
 	changes_t res   = NO_CHANGES;
 	ir_node  *src   = get_CopyB_src(copyb);
 	ir_node  *dst   = get_CopyB_dst(copyb);
@@ -1081,6 +1177,8 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 	ir_node  *block = get_nodes_block(copyb);
 
 	ir_node *node = start;
+	mark_node_optimize_iteration(node, wenv);
+
 	while (node != copyb) {
 		ldst_info_t *node_info = (ldst_info_t *)get_irn_link(node);
 
@@ -1106,6 +1204,8 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 				DB((dbg, LEVEL_1, "  killing store %+F (override by %+F)\n",
 				    node, copyb));
 				exchange(node_info->projs[pn_Store_M], get_Store_mem(node));
+									printf("KILL %li\n", node->node_nr);
+
 				kill_and_reduce_usage(node);
 				return DF_CHANGED;
 			}
@@ -1117,6 +1217,10 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 			ir_node  *store_value = get_Store_value(node);
 			unsigned  store_size  = get_mode_size_bytes(get_irn_mode(store_value));
 			/* check if we can pass through this store */
+
+			mark_node_optimize_iteration(get_Store_mem(node), wenv);
+			mark_node_optimize_iteration(skip_Proj(get_Store_mem(node)), wenv);
+
 			ir_alias_relation src_rel = get_alias_relation(
 				store_ptr, store_type, store_size,
 				src, type, size);
@@ -1136,6 +1240,10 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 			ir_alias_relation rel = get_alias_relation(
 				load_ptr, load_type, load_size,
 				dst, type, size);
+
+			mark_node_optimize_iteration(get_Load_mem(node), wenv);
+			mark_node_optimize_iteration(skip_Proj(get_Load_mem(node)), wenv);
+
 			if (rel != ir_no_alias)
 				break;
 
@@ -1145,6 +1253,9 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 			ir_node  *pred_src  = get_CopyB_src(node);
 			ir_type  *pred_type = get_CopyB_type(node);
 			unsigned  pred_size = get_type_size(pred_type);
+
+			mark_node_optimize_iteration(get_CopyB_mem(node), wenv);
+			mark_node_optimize_iteration(skip_Proj(get_CopyB_mem(node)), wenv);
 
 			if (src == pred_dst && size == pred_size
 			    && get_CopyB_volatility(node) == volatility_non_volatile) {
@@ -1192,10 +1303,13 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 	}
 
 	if (is_Sync(node)) {
+		assure_irg_properties(get_irn_irg(node), IR_GRAPH_PROPERTY_NO_UNREACHABLE_CODE
+										| IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE
+										| IR_GRAPH_PROPERTY_CONSISTENT_OUT_EDGES);
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
 			ir_node *skipped = skip_Proj(in);
-			res |= follow_copyb_mem_chain(copyb, skipped, true);
+			res |= follow_copyb_mem_chain(copyb, skipped, true, wenv);
 			if (res != NO_CHANGES)
 				break;
 		}
@@ -1208,7 +1322,7 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
  *
  * @param copyb  the CopyB node
  */
-static changes_t optimize_copyb(ir_node *copyb)
+static changes_t optimize_copyb(ir_node *copyb, walk_env_t *wenv)
 {
 	if (get_CopyB_volatility(copyb) == volatility_is_volatile)
 		return NO_CHANGES;
@@ -1217,7 +1331,7 @@ static changes_t optimize_copyb(ir_node *copyb)
 
 	INC_MASTER();
 
-	return follow_copyb_mem_chain(copyb, skip_Proj(mem), false);
+	return follow_copyb_mem_chain(copyb, skip_Proj(mem), false, wenv);
 }
 
 /* check if a node has more than one real user. Keepalive edges do not count as
@@ -1403,6 +1517,8 @@ static changes_t optimize_phi(ir_node *phi, walk_env_t *wenv)
 		assert(is_Proj(proj));
 		ir_node *store = get_Proj_pred(proj);
 		exchange(proj, inM[i]);
+											printf("KILL %li\n", store->node_nr);
+
 		kill_and_reduce_usage(store);
 	}
 
@@ -1483,15 +1599,23 @@ static changes_t optimize_conv_load(ir_node *conv)
 static void do_load_store_optimize(ir_node *n, void *env)
 {
 	walk_env_t *wenv = (walk_env_t *)env;
+	ir_nodehashmap_init(&wenv->iteration_map);
+
+	mark_node_optimize_iteration(n, wenv);
+
+	printf("---------OPT %li-----------\n", n->node_nr);
+
 	switch (get_irn_opcode(n)) {
-	case iro_Load:  wenv->changes |= optimize_load(n);      break;
-	case iro_Store: wenv->changes |= optimize_store(n);     break;
-	case iro_CopyB: wenv->changes |= optimize_copyb(n);     break;
-	case iro_Phi:   wenv->changes |= optimize_phi(n, wenv); break;
-	case iro_Conv:  wenv->changes |= optimize_conv_load(n); break;
+	case iro_Load:  wenv->changes |= optimize_load(n, wenv);   break;
+	case iro_Store: wenv->changes |= optimize_store(n, wenv);  break;
+	case iro_CopyB: wenv->changes |= optimize_copyb(n, wenv);  break;
+	case iro_Phi:   wenv->changes |= optimize_phi(n, wenv);    break;
+	case iro_Conv:  wenv->changes |= optimize_conv_load(n);    break;
 	default:
 		break;
 	}
+
+	ir_nodehashmap_destroy(&wenv->iteration_map);
 }
 
 /**
@@ -1516,6 +1640,8 @@ static changes_t eliminate_dead_store(ir_node *store)
 			    "  Killing useless %+F to never read entity %+F\n", store,
 			    entity));
 			exchange(info->projs[pn_Store_M], get_Store_mem(store));
+												printf("KILL %li\n", store->node_nr);
+
 			kill_and_reduce_usage(store);
 			return DF_CHANGED;
 		}

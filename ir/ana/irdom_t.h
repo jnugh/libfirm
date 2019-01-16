@@ -59,6 +59,10 @@ unsigned get_Block_pdom_max_subtree_pre_num(const ir_node *bl);
 
 void ir_free_dominance_frontiers(ir_graph *irg);
 
+void calculate_mem_doms(ir_graph *irg);
+void caluclate_Block_doms(ir_graph *irg);
+
+
 /**
  * Iterate over all nodes which are immediately dominated by a given
  * node.

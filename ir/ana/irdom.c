@@ -28,6 +28,16 @@ static inline ir_dom_info *get_dom_info(ir_node *block)
 	return &block->attr.block.dom;
 }
 
+static inline ir_dom_info *get_mem_dom_info(ir_node *irn)
+{
+	return &irn->mem_dom;
+}	
+
+static inline const ir_dom_info *get_mem_dom_info_const(const ir_node *irn)
+{
+	return &irn->mem_dom;
+}	
+
 static inline const ir_dom_info *get_dom_info_const(const ir_node *block)
 {
 	assert(is_Block(block));
@@ -40,10 +50,20 @@ static inline ir_dom_info *get_pdom_info(ir_node *block)
 	return &block->attr.block.pdom;
 }
 
+static inline ir_dom_info *get_mem_pdom_info(ir_node *irn) 
+{
+	return &irn->mem_pdom;
+}
+
 static inline const ir_dom_info *get_pdom_info_const(const ir_node *block)
 {
 	assert(is_Block(block));
 	return &block->attr.block.pdom;
+}
+
+static inline const ir_dom_info *get_mem_pdom_info_const(const ir_node *irn)
+{
+	return &irn->mem_pdom;
 }
 
 ir_node *get_Block_idom(const ir_node *block)
@@ -73,6 +93,22 @@ void set_Block_idom(ir_node *block, ir_node *n)
 	}
 }
 
+void set_mem_idom(ir_node *irn, ir_node *n)
+{
+	/* Set the immediate dominator of block to n */
+	ir_dom_info *memi = get_mem_dom_info(irn);
+	memi->idom = n;
+
+	/* If we don't set the root of the dominator tree
+	 * Append block to the dominates queue of n. */
+	if (n != NULL) {
+		ir_dom_info *ni = get_mem_dom_info(n);
+
+		memi->next = ni->first;
+		ni->first = irn;
+	}
+}
+
 ir_node *get_Block_ipostdom(const ir_node *block)
 {
 	assert(irg_has_properties(get_irn_irg(block), IR_GRAPH_PROPERTY_CONSISTENT_POSTDOMINANCE));
@@ -96,9 +132,31 @@ void set_Block_ipostdom(ir_node *block, ir_node *n)
 	}
 }
 
+void set_mem_ipostdom(ir_node *block, ir_node *n)
+{
+	/* Set the immediate post dominator of block to n */
+	ir_dom_info *memi = get_mem_pdom_info(block);
+	memi->idom = n;
+
+	/* If we don't set the root of the post dominator tree
+	 * Append block to the post dominates queue of n. */
+	if (n != NULL) {
+		ir_dom_info *ni = get_mem_pdom_info(n);
+
+		memi->next = ni->first;
+		ni->first = block;
+	}
+}
+
+
 int get_Block_dom_pre_num(const ir_node *block)
 {
 	return get_dom_info_const(block)->pre_num;
+}
+
+int get_mem_dom_pre_num(const ir_node *block)
+{
+	return get_mem_dom_info_const(block)->pre_num;
 }
 
 void set_Block_dom_pre_num(ir_node *block, int num)
@@ -106,14 +164,29 @@ void set_Block_dom_pre_num(ir_node *block, int num)
 	get_dom_info(block)->pre_num = num;
 }
 
+void set_mem_dom_pre_num(ir_node *irn, int num)
+{
+	get_mem_dom_info(irn)->pre_num = num;
+}
+
 int get_Block_dom_depth(const ir_node *block)
 {
 	return get_dom_info_const(block)->dom_depth;
 }
 
+int get_mem_dom_depth(const ir_node *block)
+{
+	return get_mem_dom_info_const(block)->dom_depth;
+}
+
 void set_Block_dom_depth(ir_node *block, int depth)
 {
 	get_dom_info(block)->dom_depth = depth;
+}
+
+void set_mem_dom_depth(ir_node *irn, int depth)
+{
+	get_mem_dom_info(irn)->dom_depth = depth;
 }
 
 int get_Block_postdom_pre_num(const ir_node *block)
@@ -126,14 +199,33 @@ void set_Block_postdom_pre_num(ir_node *block, int num)
 	get_pdom_info(block)->pre_num = num;
 }
 
+int get_mem_postdom_pre_num(const ir_node *block)
+{
+	return get_mem_pdom_info_const(block)->pre_num;
+}
+
+void set_mem_postdom_pre_num(ir_node *block, int num)
+{
+	get_mem_pdom_info(block)->pre_num = num;
+}
+
 int get_Block_postdom_depth(const ir_node *block)
 {
 	return get_pdom_info_const(block)->dom_depth;
 }
 
+int get_mem_postdom_depth(const ir_node *irn)
+{
+	return get_mem_pdom_info_const(irn)->dom_depth;
+}
+
 void set_Block_postdom_depth(ir_node *block, int depth)
 {
 	get_pdom_info(block)->dom_depth = depth;
+}
+
+void set_mem_postdom_depth(ir_node *irn, int depth) {
+	get_mem_pdom_info(irn)->dom_depth = depth;
 }
 
 unsigned get_Block_dom_tree_pre_num(const ir_node *block)
@@ -350,6 +442,17 @@ static void count_and_init_blocks_pdom(ir_node *block, void *env)
 	set_Block_postdom_depth(block, -1);
 }
 
+static void count_and_init_mem_pdom(ir_node *block, void *env)
+{
+	int *n_irn = (int*)env;
+	(*n_irn)++;
+
+	memset(get_mem_pdom_info(block), 0, sizeof(ir_dom_info));
+	set_mem_ipostdom(block, NULL);
+	set_mem_postdom_pre_num(block, -1);
+	set_mem_postdom_depth(block, -1);
+}
+
 /** temporary type used while constructing the dominator / post dominator tree. */
 typedef struct tmp_dom_info {
 	ir_node *block;               /**< backlink */
@@ -407,6 +510,36 @@ static void init_tmp_dom_info(ir_node *block, tmp_dom_info *parent,
 	}
 }
 
+static void init_tmp_mem_dom_info(ir_node *irn, tmp_dom_info *parent,
+                              tmp_dom_info *tdi_list, int *used, int n_nodes)
+{
+	if(irn_visited(irn)) {
+		return;
+	}
+	if(is_Phi(irn) && get_irn_mode(irn) == mode_M) {
+		return;
+	}
+	mark_irn_visited(irn);
+
+	set_mem_dom_pre_num(irn, *used);
+	assert(*used < n_nodes);
+	tmp_dom_info *tdi = &tdi_list[*used];
+	++(*used);
+
+	tdi->block = irn;
+	tdi->semi = tdi;
+	tdi->parent = parent;
+	tdi->label = tdi;
+	tdi->ancestor = NULL;
+	tdi->dom = NULL;
+	tdi->bucket = NULL;
+	tdi->unreachable = 0;
+
+	foreach_irn_in_r(irn, i, succ) {
+		init_tmp_mem_dom_info(succ, tdi, tdi_list, used, n_nodes);
+	}
+}
+
 /**
  * Walks Blocks along the control flow.  If recursion started with
  * End block misses blocks in endless loops.
@@ -449,6 +582,46 @@ static void init_tmp_pdom_info(ir_node *block, tmp_dom_info *parent,
 		foreach_irn_in_r(get_irg_end(irg), i, pred) {
 			if (is_Block(pred))
 				init_tmp_pdom_info(pred, tdi, tdi_list, used, n_blocks, 1);
+		}
+	}
+}
+
+/* Calculate reverse preorder in DFS tree */
+static void init_tmp_mem_pdom_info(ir_node *irn, tmp_dom_info *parent,
+                               tmp_dom_info *tdi_list, int* used, int n_blocks,
+                               int unreachable)
+{
+	if(irn_visited(irn)) {
+		return;
+	}
+
+	mark_irn_visited(irn);
+	set_mem_postdom_pre_num(irn, *used);
+
+	printf("reverse preorder dfs, add %li\n", irn->node_nr);
+
+	assert(*used < n_blocks);
+	tmp_dom_info *tdi = &tdi_list[*used];
+	++(*used);
+
+	tdi->block       = irn;
+	tdi->semi        = tdi;
+	tdi->parent      = parent;
+	tdi->label       = tdi;
+	tdi->ancestor    = NULL;
+	tdi->dom         = NULL;
+	tdi->bucket      = NULL;
+	tdi->unreachable = unreachable;
+
+	/* Iterate */
+	foreach_irn_in_r(irn, i, pred) {
+		init_tmp_mem_pdom_info(pred, tdi, tdi_list, used, n_blocks, unreachable);
+	}
+
+	const ir_graph *irg = get_irn_irg(irn);
+	if (irn == get_irg_end_block(irg)) {
+		foreach_irn_in_r(get_irg_end(irg), i, pred) {
+			init_tmp_mem_pdom_info(pred, tdi, tdi_list, used, n_blocks, 1);
 		}
 	}
 }
@@ -497,6 +670,19 @@ static void count_and_init_blocks_dom(ir_node *block, void *env)
 	set_Block_dom_depth(block, -1);
 }
 
+/**
+ * Walker: count the number of nodes and clears the dominance info
+ */
+static void count_and_init_mem_dom(ir_node *irn, void *env)
+{
+	unsigned *n_irn = (unsigned*)env;
+	(*n_irn)++;
+	memset(get_mem_dom_info(irn), 0, sizeof(ir_dom_info));
+	set_mem_idom(irn, NULL);
+	set_mem_dom_pre_num(irn, -1);
+	set_mem_dom_depth(irn, -1);
+}
+
 void compute_doms(ir_graph *irg)
 {
 	assert(!irg_is_constrained(irg, IR_GRAPH_CONSTRAINT_CONSTRUCTION));
@@ -505,8 +691,112 @@ void compute_doms(ir_graph *irg)
 	assure_irg_properties(irg, IR_GRAPH_PROPERTY_CONSISTENT_OUTS
 	                         | IR_GRAPH_PROPERTY_NO_TUPLES);
 
+	caluclate_Block_doms(irg);
+	calculate_mem_doms(irg);
+
+	add_irg_properties(irg, IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE);
+
+	/* Do a walk over the tree and assign the tree pre orders. */
+	unsigned tree_pre_order = 0;
+	dom_tree_walk(get_irg_start_block(irg), assign_tree_dom_pre_order,
+	              assign_tree_dom_pre_order_max, &tree_pre_order);
+}
+
+void calculate_mem_doms(ir_graph *irg)
+{
+	/* Count the number of memory nodes in the graph. */
+	unsigned n_nodes = 0;
+	/* Can't use irg_walk_graph because of bad nodes. 
+	   Plus verifing IR_GRAPH_PROPERTY_NO_BADS leads to a cycle 
+	   because this verifies IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE */
+	irg_walk_graph(irg, count_and_init_mem_dom, NULL, &n_nodes);
+	
+	/* Memory for temporary information. */
+	tmp_dom_info *tdi_list = XMALLOCN(tmp_dom_info, n_nodes);
+
+	/* this with a standard walker as passing the parent to the sons isn't
+	   simple. */
+	ir_reserve_resources(irg, IR_RESOURCE_BLOCK_VISITED);
+	inc_irg_visited(irg);
+	int used = 0;
+	init_tmp_mem_dom_info(get_irg_end_block(irg), NULL, tdi_list, &used, n_nodes);
+	ir_free_resources(irg, IR_RESOURCE_BLOCK_VISITED);
+	/* If not all blocks are reachable from Start by out edges this assertion
+	   fails. */
+	assert(used <= n_nodes);
+	n_nodes = used;
+
+	if(n_nodes < 1) {
+		free(tdi_list);
+		return;
+	}
+
+	for (int i = n_nodes; i-- > 1; ) {  /* Don't iterate the root, it's done. */
+		tmp_dom_info  *w     = &tdi_list[i];
+		const ir_node *irn = w->block;
+
+		/* Step 2 */
+		for (int j = 0, arity = get_irn_n_outs(irn); j < arity; j++) {
+			const ir_node *pred       = get_irn_out(irn, j);
+
+			if (is_Bad(pred) || (is_Phi(pred)  && get_irn_mode(irn) == mode_M) || get_mem_dom_pre_num(pred) == -1)
+				continue;    /* unreachable */
+
+			const tmp_dom_info *u = dom_eval(&tdi_list[get_mem_dom_pre_num(pred)]);
+			if (u->semi < w->semi) {
+				w->semi = u->semi;
+			}
+		}
+
+		/* Add w to w->semi's bucket.  w is in exactly one bucket, so
+		   buckets can been implemented as linked lists. */
+		w->bucket = w->semi->bucket;
+		w->semi->bucket = w;
+
+		dom_link(w->parent, w);
+
+		/* Step 3 */
+		while (w->parent->bucket) {
+			tmp_dom_info *v = w->parent->bucket;
+			/* remove v from w->parent->bucket */
+			w->parent->bucket = v->bucket;
+			v->bucket         = NULL;
+
+			tmp_dom_info *u = dom_eval(v);
+			if (u->semi < v->semi)
+				v->dom = u;
+			else
+				v->dom = w->parent;
+		}
+	}
+	/* Step 4 */
+	tdi_list[0].dom = NULL;
+	set_mem_idom(tdi_list[0].block, NULL);
+	set_mem_dom_depth(tdi_list[0].block, 1);
+	for (int i = 1; i < n_nodes; i++) {
+		tmp_dom_info *w = &tdi_list[i];
+		if (w->dom == NULL)
+			continue; /* control dead */
+
+		if (w->dom != w->semi)
+			w->dom = w->dom->dom;
+		set_mem_idom(w->block, w->dom->block);
+
+		/* blocks dominated by dead one's are still dead */
+		int depth = get_mem_dom_depth(w->dom->block);
+		if (depth > 0)
+			++depth;
+		set_mem_dom_depth(w->block, depth);
+	}
+
+	/* clean up */
+	free(tdi_list);
+}
+
+void caluclate_Block_doms(ir_graph *irg)
+{
 	/* Count the number of blocks in the graph. */
-	int n_blocks = 0;
+	unsigned n_blocks = 0;
 	irg_block_walk_graph(irg, count_and_init_blocks_dom, NULL, &n_blocks);
 
 	/* Memory for temporary information. */
@@ -596,13 +886,6 @@ void compute_doms(ir_graph *irg)
 
 	/* clean up */
 	free(tdi_list);
-
-	add_irg_properties(irg, IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE);
-
-	/* Do a walk over the tree and assign the tree pre orders. */
-	unsigned tree_pre_order = 0;
-	dom_tree_walk(get_irg_start_block(irg), assign_tree_dom_pre_order,
-	              assign_tree_dom_pre_order_max, &tree_pre_order);
 }
 
 static void update_pdom_semi(tmp_dom_info *tdi_list, tmp_dom_info *w,
@@ -617,14 +900,19 @@ static void update_pdom_semi(tmp_dom_info *tdi_list, tmp_dom_info *w,
 	}
 }
 
-void compute_postdoms(ir_graph *irg)
+static void update_mem_pdom_semi(tmp_dom_info *tdi_list, tmp_dom_info *w,
+                             ir_node *succ_block)
 {
-	/* Update graph state */
-	assert(!irg_is_constrained(irg, IR_GRAPH_CONSTRAINT_CONSTRUCTION));
+	const int           pre_num = get_mem_postdom_pre_num(succ_block);
+	assert(pre_num != -1);
+	const tmp_dom_info *u       = dom_eval(&tdi_list[pre_num]);
+	if (u->semi < w->semi) {
+		w->semi = u->semi;
+	}
+}
 
-	/* We need the out data structure. */
-	assure_irg_properties(irg, IR_GRAPH_PROPERTY_CONSISTENT_OUTS | IR_GRAPH_PROPERTY_NO_TUPLES);
-
+void caluclate_Block_postdoms(ir_graph *irg) 
+{
 	/* Count the number of blocks in the graph. */
 	int n_blocks = 0;
 	irg_block_walk_graph(irg, count_and_init_blocks_pdom, NULL, &n_blocks);
@@ -700,6 +988,104 @@ void compute_postdoms(ir_graph *irg)
 
 	/* clean up */
 	free(tdi_list);
+}
+
+void calculate_mem_postdoms(ir_graph *irg)
+{
+	/* Count the number of blocks in the graph. */
+	int n_nodes = 0;
+	irg_walk_graph(irg, count_and_init_mem_pdom, NULL, &n_nodes);
+
+	/* memory for temporary information. */
+	tmp_dom_info *tdi_list = XMALLOCN(tmp_dom_info, n_nodes);
+
+	/* this with a standard walker as passing the parent to the sons isn't
+	   simple. */
+	ir_reserve_resources(irg, IR_RESOURCE_BLOCK_VISITED);
+	inc_irg_visited(irg);
+	int used = 0;
+	ir_node *end_irn = get_irg_end_block(irg);
+	printf("Calculate inverse preorder from dfs: \n");
+	init_tmp_mem_pdom_info(end_irn, NULL, tdi_list, &used, n_nodes, 0);
+	ir_free_resources(irg, IR_RESOURCE_BLOCK_VISITED);
+	assert(used <= n_nodes);
+	n_nodes = used;
+
+	if(n_nodes < 1) {
+		free(tdi_list);
+		return;
+	}
+
+	printf("\nCalculate semidominators:\n");
+	for (int i = n_nodes; i-- > 1; ) {  /* Don't iterate the root, it's done. */
+		tmp_dom_info *w = &tdi_list[i];
+
+		/* Step 2 */
+		ir_node  *irn       = w->block;
+		bool      unreachable = w->unreachable;
+		foreach_irn_out(irn, j, succ) {
+			if (is_Bad(succ))
+				continue;
+			if (is_End(succ)) {
+				if (unreachable && end_irn != irn)
+					/* Handle keep-alive edges to unreachable
+					 * blocks as normal control flow. */
+					update_mem_pdom_semi(tdi_list, w, end_irn);
+				continue;
+			}
+			foreach_irn_out(succ, k, succ2) {
+				update_mem_pdom_semi(tdi_list, w, succ2);
+			}
+		}
+
+		/* Add w to w->semi's bucket.  w is in exactly one bucket, so
+		   buckets can be implemented as linked lists. */
+		w->bucket = w->semi->bucket;
+		w->semi->bucket = w;
+
+		dom_link(w->parent, w);
+
+		/* Step 3 */
+		while (w->parent->bucket) {
+			tmp_dom_info *v = w->parent->bucket;
+			/* remove v from w->parent->bucket */
+			w->parent->bucket = v->bucket;
+			v->bucket         = NULL;
+
+			tmp_dom_info *u = dom_eval(v);
+			if (u->semi < v->semi)
+				v->dom = u;
+			else
+				v->dom = w->parent;
+		}
+	}
+	/* Step 4 */
+	tdi_list[0].dom = NULL;
+	set_mem_ipostdom(tdi_list[0].block, NULL);
+	set_mem_postdom_depth(tdi_list[0].block, 1);
+	for (int i = 1; i < n_nodes; i++) {
+		tmp_dom_info *w = &tdi_list[i];
+
+		if(w->dom == NULL || w->dom->dom == NULL) continue;
+		if (w->dom != w->semi)
+			w->dom = w->dom->dom;
+		set_mem_ipostdom(w->block, w->dom->block);
+		set_mem_postdom_depth(w->block, get_mem_postdom_depth(w->dom->block) + 1);
+	}
+
+	/* clean up */
+	free(tdi_list);
+}
+
+void compute_postdoms(ir_graph *irg)
+{
+	/* Update graph state */
+	assert(!irg_is_constrained(irg, IR_GRAPH_CONSTRAINT_CONSTRUCTION));
+
+	/* We need the out data structure. */
+	assure_irg_properties(irg, IR_GRAPH_PROPERTY_CONSISTENT_OUTS | IR_GRAPH_PROPERTY_NO_TUPLES);
+
+	caluclate_Block_postdoms(irg);
 
 	add_irg_properties(irg, IR_GRAPH_PROPERTY_CONSISTENT_POSTDOMINANCE);
 

@@ -227,7 +227,7 @@ typedef struct asm_attr {
 
 /** Attributes for Proj nodes. */
 typedef struct proj_attr {
-	unsigned num; /**< number of tuple sub-value which is projected */
+	unsigned       num; /**< number of tuple sub-value which is projected */
 } proj_attr;
 
 /** Attributes for Switch nodes. */
@@ -311,6 +311,9 @@ struct ir_node {
 	ir_loop         *loop;         /**< Loop information. */
 	void            *backend_info;
 	irn_edges_info_t edge_info;    /**< Everlasting out edges. */
+
+	ir_dom_info    mem_dom; /**< Contains dominance information for the given node */
+	ir_dom_info    mem_pdom; /**< Contains predominance information for the given node */
 
 	/** Attributes of this node. Depends on opcode. Must be last field. */
 	ir_attr attr;
