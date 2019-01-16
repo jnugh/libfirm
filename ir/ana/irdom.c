@@ -516,9 +516,7 @@ static void init_tmp_mem_dom_info(ir_node *irn, tmp_dom_info *parent,
 	if(irn_visited(irn)) {
 		return;
 	}
-	if(is_Phi(irn) && get_irn_mode(irn) == mode_M) {
-		return;
-	}
+	
 	mark_irn_visited(irn);
 
 	set_mem_dom_pre_num(irn, *used);
@@ -535,7 +533,7 @@ static void init_tmp_mem_dom_info(ir_node *irn, tmp_dom_info *parent,
 	tdi->bucket = NULL;
 	tdi->unreachable = 0;
 
-	foreach_irn_in_r(irn, i, succ) {
+	foreach_irn_out_r(irn, i, succ) {
 		init_tmp_mem_dom_info(succ, tdi, tdi_list, used, n_nodes);
 	}
 }
@@ -614,13 +612,13 @@ static void init_tmp_mem_pdom_info(ir_node *irn, tmp_dom_info *parent,
 	tdi->unreachable = unreachable;
 
 	/* Iterate */
-	foreach_irn_in_r(irn, i, pred) {
+	foreach_irn_out_r(irn, i, pred) {
 		init_tmp_mem_pdom_info(pred, tdi, tdi_list, used, n_blocks, unreachable);
 	}
 
 	const ir_graph *irg = get_irn_irg(irn);
-	if (irn == get_irg_end_block(irg)) {
-		foreach_irn_in_r(get_irg_end(irg), i, pred) {
+	if (irn == get_irg_start(irg)) {
+		foreach_irn_out_r(get_irg_end(irg), i, pred) {
 			init_tmp_mem_pdom_info(pred, tdi, tdi_list, used, n_blocks, 1);
 		}
 	}
@@ -719,7 +717,7 @@ void calculate_mem_doms(ir_graph *irg)
 	ir_reserve_resources(irg, IR_RESOURCE_BLOCK_VISITED);
 	inc_irg_visited(irg);
 	int used = 0;
-	init_tmp_mem_dom_info(get_irg_end_block(irg), NULL, tdi_list, &used, n_nodes);
+	init_tmp_mem_dom_info(get_irg_start(irg), NULL, tdi_list, &used, n_nodes);
 	ir_free_resources(irg, IR_RESOURCE_BLOCK_VISITED);
 	/* If not all blocks are reachable from Start by out edges this assertion
 	   fails. */
@@ -736,10 +734,10 @@ void calculate_mem_doms(ir_graph *irg)
 		const ir_node *irn = w->block;
 
 		/* Step 2 */
-		for (int j = 0, arity = get_irn_n_outs(irn); j < arity; j++) {
-			const ir_node *pred       = get_irn_out(irn, j);
+		for (int j = 0, arity = get_irn_arity(irn); j < arity; j++) {
+			const ir_node *pred       = get_irn_n(irn, j);
 
-			if (is_Bad(pred) || (is_Phi(pred)  && get_irn_mode(irn) == mode_M) || get_mem_dom_pre_num(pred) == -1)
+			if (is_Bad(pred) || get_mem_dom_pre_num(pred) == -1)
 				continue;    /* unreachable */
 
 			const tmp_dom_info *u = dom_eval(&tdi_list[get_mem_dom_pre_num(pred)]);

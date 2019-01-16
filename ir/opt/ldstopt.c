@@ -97,6 +97,7 @@ typedef struct block_info_t {
 
 typedef struct iteration_info_t {
 	bool visited;
+	bool barrier;
 } iteration_info_t;
 
 
@@ -174,6 +175,15 @@ void mark_node_optimize_iteration(ir_node *n, walk_env_t *env)
 		ir_nodehashmap_insert(&env->iteration_map, n, info);
 	}
 	info->visited = true;
+	if(n->mem_dom.idom != NULL) {
+		iteration_info_t *barrier_info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, n->mem_dom.idom );
+		if(barrier_info == NULL) {
+			barrier_info = OALLOC(&env->obst, iteration_info_t);
+			memset(barrier_info, 0, sizeof(*barrier_info));
+			ir_nodehashmap_insert(&env->iteration_map, n->mem_dom.idom , barrier_info);
+		}
+		barrier_info->barrier = true;
+	}
 }
 
 bool barrier_blocked(ir_node *n, walk_env_t *env) 
@@ -182,8 +192,8 @@ bool barrier_blocked(ir_node *n, walk_env_t *env)
 		/* If there is only one edge coming into the node we can safely traverse further - no path is missing */
 		return false;
 	}
-	iteration_info_t *info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, n->mem_dom.idom);
-	if(info == NULL || !info->visited) {
+	iteration_info_t *info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, n);
+	if(info == NULL || !info->barrier) {
 		/* If the dominator is not part of the map it has not been visited, 
 		 * we started on a distinct path between dominator and sync and can safely traverse this path */
 		return false;
@@ -713,7 +723,7 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 			mark_node_optimize_iteration(skip_Proj(get_Store_mem(node)), wenv);
 
 			/* if the might be an alias, we cannot pass this Store */
-			if (rel != ir_no_alias)
+			if (rel != ir_no_alias || barrier_blocked(get_Store_mem(node), wenv))
 				break;
 			node = skip_Proj(get_Store_mem(node));
 		} else if (is_Load(node)) {
@@ -725,6 +735,10 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 
 			if (changes != NO_CHANGES)
 				return changes | res;
+			
+			if(barrier_blocked(get_Load_mem(node), wenv)) {
+				break;
+			}
 			/* we can skip any load */
 			node = skip_Proj(get_Load_mem(node));
 		} else if (is_CopyB(node)) {
@@ -761,10 +775,17 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 			mark_node_optimize_iteration(skip_Proj(get_CopyB_mem(node)), wenv);
 			if (rel != ir_no_alias)
 				break;
+			if(barrier_blocked(get_CopyB_mem(node), wenv)) {
+				break;
+			}
 			node = skip_Proj(get_CopyB_mem(node));
 		} else if (is_irn_const_memory(node)) {
 			mark_node_optimize_iteration(get_memop_mem(node), wenv);
 			mark_node_optimize_iteration(skip_Proj(get_memop_mem(node)), wenv);
+
+			if(barrier_blocked(get_memop_mem(node), wenv)) {
+				break;
+			}
 
 			node = skip_Proj(get_memop_mem(node));
 		} else {
@@ -780,9 +801,6 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 	}
 
 	if (is_Sync(node)) {
-		assure_irg_properties(get_irn_irg(node), IR_GRAPH_PROPERTY_NO_UNREACHABLE_CODE
-										| IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE
-										| IR_GRAPH_PROPERTY_CONSISTENT_OUT_EDGES);
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
 			ir_node *skipped = skip_Proj(in);
@@ -1052,6 +1070,9 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 			/* if the might be an alias, we cannot pass this Store */
 			if (rel != ir_no_alias)
 				break;
+			if(barrier_blocked(get_Store_mem(node), wenv)) {
+				break;
+			}
 			node = skip_Proj(get_Store_mem(node));
 		} else if (is_Load(node)) {
 			ir_node           *load_ptr  = get_Load_ptr(node);
@@ -1066,7 +1087,9 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 
 			if (rel != ir_no_alias)
 				break;
-
+			if(barrier_blocked(get_Load_mem(node), wenv)) {
+				break;
+			}
 			node = skip_Proj(get_Load_mem(node));
 		} else if (is_CopyB(node)) {
 			ir_node           *copyb_src  = get_CopyB_src(node);
@@ -1096,9 +1119,6 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 	}
 
 	if (is_Sync(node)) {
-		assure_irg_properties(get_irn_irg(node), IR_GRAPH_PROPERTY_NO_UNREACHABLE_CODE
-										| IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE
-										| IR_GRAPH_PROPERTY_CONSISTENT_OUT_EDGES);
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
 			ir_node *skipped = skip_Proj(in);
@@ -1231,7 +1251,9 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 				dst, type, size);
 			if (dst_rel != ir_no_alias)
 				break;
-
+			if(barrier_blocked(get_Store_mem(node), wenv)) {
+				break;
+			}
 			node = skip_Proj(get_Store_mem(node));
 		} else if (is_Load(node)) {
 			ir_node  *load_ptr  = get_Load_ptr(node);
@@ -1247,6 +1269,9 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 			if (rel != ir_no_alias)
 				break;
 
+			if(barrier_blocked(get_Load_mem(node), wenv)) {
+				break;
+			}
 			node = skip_Proj(get_Load_mem(node));
 		} else if (is_CopyB(node)) {
 			ir_node  *pred_dst  = get_CopyB_dst(node);
@@ -1291,6 +1316,10 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 					break;
 			}
 
+			if(barrier_blocked(get_CopyB_mem(node), wenv)) {
+				break;
+			}
+
 			node = skip_Proj(get_CopyB_mem(node));
 		} else {
 			break;
@@ -1303,9 +1332,6 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 	}
 
 	if (is_Sync(node)) {
-		assure_irg_properties(get_irn_irg(node), IR_GRAPH_PROPERTY_NO_UNREACHABLE_CODE
-										| IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE
-										| IR_GRAPH_PROPERTY_CONSISTENT_OUT_EDGES);
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
 			ir_node *skipped = skip_Proj(in);
