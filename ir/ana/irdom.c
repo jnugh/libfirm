@@ -513,7 +513,7 @@ static void init_tmp_dom_info(ir_node *block, tmp_dom_info *parent,
 static void init_tmp_mem_dom_info(ir_node *irn, tmp_dom_info *parent,
                               tmp_dom_info *tdi_list, int *used, int n_nodes)
 {
-	if(irn_visited(irn)) {
+	if(irn_visited(irn) || get_irn_mode(irn) != mode_M) {
 		return;
 	}
 	
@@ -673,6 +673,7 @@ static void count_and_init_blocks_dom(ir_node *block, void *env)
  */
 static void count_and_init_mem_dom(ir_node *irn, void *env)
 {
+	if(get_irn_mode(irn) != mode_M) return;
 	unsigned *n_irn = (unsigned*)env;
 	(*n_irn)++;
 	memset(get_mem_dom_info(irn), 0, sizeof(ir_dom_info));
@@ -737,7 +738,7 @@ void calculate_mem_doms(ir_graph *irg)
 		for (int j = 0, arity = get_irn_arity(irn); j < arity; j++) {
 			const ir_node *pred       = get_irn_n(irn, j);
 
-			if (is_Bad(pred) || get_mem_dom_pre_num(pred) == -1)
+			if (is_Bad(pred) || get_mem_dom_pre_num(pred) == -1 || get_irn_mode(pred) != mode_M)
 				continue;    /* unreachable */
 
 			const tmp_dom_info *u = dom_eval(&tdi_list[get_mem_dom_pre_num(pred)]);

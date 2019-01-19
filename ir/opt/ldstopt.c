@@ -188,6 +188,7 @@ void mark_node_optimize_iteration(ir_node *n, walk_env_t *env)
 
 bool barrier_blocked(ir_node *n, walk_env_t *env) 
 {
+	assure_irg_properties(get_irn_irg(n), IR_GRAPH_PROPERTY_CONSISTENT_OUTS);
 	if(get_irn_n_outs(n) < 2 || !n->mem_dom.idom) {
 		/* If there is only one edge coming into the node we can safely traverse further - no path is missing */
 		return false;
@@ -199,20 +200,15 @@ bool barrier_blocked(ir_node *n, walk_env_t *env)
 		return false;
 	}
 
-	printf("Check pred of %li because %li was vidited\n", n->node_nr, n->mem_dom.idom->node_nr);
-
 	/* If any predecessor has not been visited we need to wait for the other paths to be traversed to continue safely */
 	for(int i = 0; i < get_irn_n_outs(n); i++) {
+		if(get_irn_mode(get_irn_out(n, i)) != mode_M) continue;
 		iteration_info_t *in_info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, get_irn_out(n, i));
-		if(!is_Deleted(get_irn_out(n, i))) {
-			printf("NOT DELETED! %li \n", get_irn_out(n, i)->node_nr);
-		}
 		if((in_info == NULL || !in_info->visited) && !is_Deleted(get_irn_out(n, i))) {
 			printf("Blocked %li\n", n->node_nr);
 			return true;
 		}
 	}
-	printf("Released %li\n", n->node_nr);
 
 	return false;
 }
@@ -515,7 +511,6 @@ static changes_t replace_load(ir_node *load, ir_node *new_value)
 	/* loads without user should already be optimized away */
 	assert(info->projs[pn_Load_res] != NULL);
 	exchange(info->projs[pn_Load_res], new_value);
-									printf("KILL %li\n", load->node_nr);
 
 	kill_and_reduce_usage(load);
 	return res | DF_CHANGED;
@@ -703,7 +698,7 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 	changes_t  res  = NO_CHANGES;
 	for (;;) {
 		ldst_info_t *node_info = (ldst_info_t *)get_irn_link(node);
-		printf("Follow %li\n", start->node_nr);
+
 		if (is_Store(node)) {
 			/* first try load-after-store */
 			changes_t changes = try_load_after_store(env, node);
@@ -887,7 +882,6 @@ static changes_t optimize_load(ir_node *load, walk_env_t *wenv)
 		assert(info->projs[pn_Load_X_regular] == NULL);
 		/* the value is never used and we don't care about exceptions, remove */
 		exchange(info->projs[pn_Load_M], mem);
-		printf("KILL %li\n", load->node_nr);
 		kill_and_reduce_usage(load);
 		return res | DF_CHANGED;
 	}
@@ -906,7 +900,6 @@ static changes_t optimize_load(ir_node *load, walk_env_t *wenv)
 			ldst_info_t *info = (ldst_info_t*)get_irn_link(load);
 			exchange(info->projs[pn_Load_res], val);
 			exchange(info->projs[pn_Load_M], get_Load_mem(load));
-			printf("KILL %li\n", load->node_nr);
 			kill_and_reduce_usage(load);
 			return DF_CHANGED;
 		}
@@ -1009,7 +1002,6 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 					DB((dbg, LEVEL_1, "  killing store %+F (override by %+F)\n",
 					    node, store));
 					exchange(node_info->projs[pn_Store_M], get_Store_mem(node));
-					printf("KILL %li\n", node->node_nr);
 					kill_and_reduce_usage(node);
 					return DF_CHANGED;
 				}
@@ -1030,7 +1022,6 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 					DB((dbg, LEVEL_1, "  killing store %+F (override by %+F)\n",
 					    node, store));
 					exchange(info->projs[pn_Store_M], mem);
-					printf("KILL %li\n", store->node_nr);
 					kill_and_reduce_usage(store);
 					return DF_CHANGED;
 				}
@@ -1049,7 +1040,6 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 				    "  killing store %+F (read %+F from same address)\n",
 				    store, node));
 				exchange(info->projs[pn_Store_M], mem);
-				printf("KILL %li\n", store->node_nr);
 				kill_and_reduce_usage(store);
 				return DF_CHANGED;
 			}
@@ -1224,7 +1214,6 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 				DB((dbg, LEVEL_1, "  killing store %+F (override by %+F)\n",
 				    node, copyb));
 				exchange(node_info->projs[pn_Store_M], get_Store_mem(node));
-									printf("KILL %li\n", node->node_nr);
 
 				kill_and_reduce_usage(node);
 				return DF_CHANGED;
@@ -1543,7 +1532,6 @@ static changes_t optimize_phi(ir_node *phi, walk_env_t *wenv)
 		assert(is_Proj(proj));
 		ir_node *store = get_Proj_pred(proj);
 		exchange(proj, inM[i]);
-											printf("KILL %li\n", store->node_nr);
 
 		kill_and_reduce_usage(store);
 	}
@@ -1629,7 +1617,6 @@ static void do_load_store_optimize(ir_node *n, void *env)
 
 	mark_node_optimize_iteration(n, wenv);
 
-	printf("---------OPT %li-----------\n", n->node_nr);
 
 	switch (get_irn_opcode(n)) {
 	case iro_Load:  wenv->changes |= optimize_load(n, wenv);   break;
@@ -1666,7 +1653,6 @@ static changes_t eliminate_dead_store(ir_node *store)
 			    "  Killing useless %+F to never read entity %+F\n", store,
 			    entity));
 			exchange(info->projs[pn_Store_M], get_Store_mem(store));
-												printf("KILL %li\n", store->node_nr);
 
 			kill_and_reduce_usage(store);
 			return DF_CHANGED;
