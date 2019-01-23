@@ -188,8 +188,7 @@ void mark_node_optimize_iteration(ir_node *n, walk_env_t *env)
 
 bool barrier_blocked(ir_node *n, walk_env_t *env) 
 {
-	assure_irg_properties(get_irn_irg(n), IR_GRAPH_PROPERTY_CONSISTENT_OUTS);
-	if(get_irn_n_outs(n) < 2 || !n->mem_dom.idom) {
+	if(n->o.out == NULL || get_irn_n_outs(n) < 2 || !n->mem_dom.idom) {
 		/* If there is only one edge coming into the node we can safely traverse further - no path is missing */
 		return false;
 	}
@@ -202,10 +201,8 @@ bool barrier_blocked(ir_node *n, walk_env_t *env)
 
 	/* If any predecessor has not been visited we need to wait for the other paths to be traversed to continue safely */
 	for(int i = 0; i < get_irn_n_outs(n); i++) {
-		if(get_irn_mode(get_irn_out(n, i)) != mode_M) continue;
 		iteration_info_t *in_info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, get_irn_out(n, i));
 		if((in_info == NULL || !in_info->visited) && !is_Deleted(get_irn_out(n, i))) {
-			printf("Blocked %li\n", n->node_nr);
 			return true;
 		}
 	}
@@ -798,6 +795,9 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 	if (is_Sync(node)) {
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
+			if(barrier_blocked(in, wenv)) {
+				continue;
+			}
 			ir_node *skipped = skip_Proj(in);
 			res |= follow_load_mem_chain(env, skipped, wenv);
 			if ((res & ~NODES_CREATED) != NO_CHANGES)
@@ -1111,6 +1111,9 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 	if (is_Sync(node)) {
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
+			if(barrier_blocked(in, wenv)) {
+				continue;
+			}
 			ir_node *skipped = skip_Proj(in);
 			res |= follow_store_mem_chain(store, skipped, true, wenv);
 			if (res != NO_CHANGES)
@@ -1323,6 +1326,9 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 	if (is_Sync(node)) {
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
+			if(barrier_blocked(in, wenv)) {
+				continue;
+			}
 			ir_node *skipped = skip_Proj(in);
 			res |= follow_copyb_mem_chain(copyb, skipped, true, wenv);
 			if (res != NO_CHANGES)
