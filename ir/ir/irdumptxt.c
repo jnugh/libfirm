@@ -123,13 +123,6 @@ void dump_irnode_to_file(FILE *const F, const ir_node *const n)
 		fprintf(F, " %ld\n", get_irn_node_nr(pred));
 	}
 
-	if (irg_has_properties(get_irn_irg(n), IR_GRAPH_PROPERTY_CONSISTENT_DOMINANCE) && n->mem_dom.idom != NULL) {
-			fprintf(F, "  Dominator: %li\n", n->mem_dom.idom->node_nr);
-	}
-	if (irg_has_properties(get_irn_irg(n), IR_GRAPH_PROPERTY_CONSISTENT_POSTDOMINANCE) && n->mem_pdom.idom != NULL) {
-		fprintf(F, "  Post-Dominator: %li\n", n->mem_pdom.idom->node_nr);
-	}
-
 	fprintf(F, "  Private Attributes:\n");
 
 	if (is_Proj(n)) {

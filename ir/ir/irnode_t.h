@@ -312,9 +312,6 @@ struct ir_node {
 	void            *backend_info;
 	irn_edges_info_t edge_info;    /**< Everlasting out edges. */
 
-	ir_dom_info    mem_dom; /**< Contains dominance information for the given node */
-	ir_dom_info    mem_pdom; /**< Contains predominance information for the given node */
-
 	/** Attributes of this node. Depends on opcode. Must be last field. */
 	ir_attr attr;
 };

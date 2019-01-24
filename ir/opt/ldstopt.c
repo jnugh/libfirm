@@ -58,6 +58,7 @@ typedef struct walk_env_t {
 	struct obstack obst;    /**< list of all stores */
 	changes_t      changes; /**< a bitmask of graph changes */
 	ir_nodehashmap_t iteration_map;
+	mem_dom_env dom_env; /**< Environment to handle mem dom calculation */
 } walk_env_t;
 
 /** A Load/Store info. */
@@ -175,12 +176,13 @@ void mark_node_optimize_iteration(ir_node *n, walk_env_t *env)
 		ir_nodehashmap_insert(&env->iteration_map, n, info);
 	}
 	info->visited = true;
-	if(n->mem_dom.idom != NULL) {
-		iteration_info_t *barrier_info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, n->mem_dom.idom );
+	ir_dom_info *dom_info = ir_nodehashmap_get(ir_dom_info, &(env->dom_env.dom_information), n); 
+	if(dom_info != NULL && dom_info->idom != NULL) {
+		iteration_info_t *barrier_info = ir_nodehashmap_get(iteration_info_t, &env->iteration_map, dom_info->idom );
 		if(barrier_info == NULL) {
 			barrier_info = OALLOC(&env->obst, iteration_info_t);
 			memset(barrier_info, 0, sizeof(*barrier_info));
-			ir_nodehashmap_insert(&env->iteration_map, n->mem_dom.idom , barrier_info);
+			ir_nodehashmap_insert(&env->iteration_map, dom_info->idom , barrier_info);
 		}
 		barrier_info->barrier = true;
 	}
@@ -188,7 +190,8 @@ void mark_node_optimize_iteration(ir_node *n, walk_env_t *env)
 
 bool barrier_blocked(ir_node *n, walk_env_t *env) 
 {
-	if(n->o.out == NULL || get_irn_n_outs(n) < 2 || !n->mem_dom.idom) {
+	ir_dom_info *dom_info = ir_nodehashmap_get(ir_dom_info, &(env->dom_env.dom_information), n); 
+	if(n->o.out == NULL || get_irn_n_outs(n) < 2 || dom_info == NULL || dom_info->idom == NULL) {
 		/* If there is only one edge coming into the node we can safely traverse further - no path is missing */
 		return false;
 	}
@@ -2460,6 +2463,11 @@ void optimize_load_store(ir_graph *irg)
 	walk_env_t env = { .changes = NO_CHANGES };
 	obstack_init(&env.obst);
 
+	/** Generate dominance information for memory access to handle partitioned variable access */
+	ir_nodehashmap_init(&env.dom_env.dom_information);
+	obstack_init(&env.dom_env.obst);
+	calculate_mem_doms(irg, &env.dom_env);
+
 	/* init the links, then collect Loads/Stores/Proj's in lists */
 	ir_reserve_resources(irg, IR_RESOURCE_IRN_LINK);
 	master_visited = 0;
@@ -2478,6 +2486,8 @@ void optimize_load_store(ir_graph *irg)
 	ir_free_resources(irg, IR_RESOURCE_IRN_LINK);
 
 	obstack_free(&env.obst, NULL);
+	obstack_free(&env.dom_env.obst, NULL);
+	ir_nodehashmap_destroy(&env.dom_env.dom_information);
 
 	confirm_irg_properties(irg,
 		env.changes == NO_CHANGES ? IR_GRAPH_PROPERTIES_ALL :

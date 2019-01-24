@@ -15,6 +15,7 @@
 #include "irdom.h"
 #include "pmap.h"
 #include "obst.h"
+#include "irnodehashmap.h"
 
 /** For dominator information */
 typedef struct ir_dom_info {
@@ -34,6 +35,12 @@ typedef struct ir_dom_front_info_t {
 	pmap *df_map;         /**< A map, mapping every block to a list of its dominance frontier blocks. */
 	struct obstack obst;  /**< An obstack holding all the frontier data. */
 } ir_dom_front_info_t;
+
+typedef struct mem_dom_env {
+	ir_nodehashmap_t dom_information; /**< contains ir_dom_infos per mem node */
+	struct obstack obst;  /**< An obstack to allocate map entries. */
+	unsigned int n_irn;
+} mem_dom_env;
 
 void set_Block_idom(ir_node *bl, ir_node *n);
 
@@ -59,9 +66,7 @@ unsigned get_Block_pdom_max_subtree_pre_num(const ir_node *bl);
 
 void ir_free_dominance_frontiers(ir_graph *irg);
 
-void calculate_mem_doms(ir_graph *irg);
-void caluclate_Block_doms(ir_graph *irg);
-
+void calculate_mem_doms(ir_graph *irg, mem_dom_env *env);
 
 /**
  * Iterate over all nodes which are immediately dominated by a given
