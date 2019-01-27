@@ -458,7 +458,7 @@ static void init_tmp_dom_info(ir_node *block, tmp_dom_info *parent,
 static void init_tmp_mem_dom_info(ir_node *irn, tmp_dom_info *parent,
                               tmp_dom_info *tdi_list, int *used, int n_nodes, mem_dom_env *env)
 {
-	if(irn_visited(irn)) {
+	if(irn_visited(irn) || (get_irn_mode(irn) != mode_M && get_irn_mode(irn) != mode_T)) {
 		return;
 	}
 	
@@ -626,8 +626,9 @@ void compute_doms(ir_graph *irg)
 				continue;    /* unreachable */
 
 			const tmp_dom_info *u = dom_eval(&tdi_list[get_Block_dom_pre_num(pred_block)]);
-			if (u->semi < w->semi)
+			if (u->semi < w->semi) {
 				w->semi = u->semi;
+			}
 		}
 
 		/* handle keep-alives if we are at the end block */

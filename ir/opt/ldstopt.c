@@ -191,7 +191,7 @@ void mark_node_optimize_iteration(ir_node *n, walk_env_t *env)
 bool barrier_blocked(ir_node *n, walk_env_t *env) 
 {
 	ir_dom_info *dom_info = ir_nodehashmap_get(ir_dom_info, &(env->dom_env.dom_information), n); 
-	if(n->o.out == NULL || get_irn_n_outs(n) < 2 || dom_info == NULL || dom_info->idom == NULL) {
+	if(n->o.out == NULL || get_irn_n_outs(n) < 2 || dom_info == NULL) {
 		/* If there is only one edge coming into the node we can safely traverse further - no path is missing */
 		return false;
 	}
@@ -694,7 +694,6 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 	unsigned  load_size = get_mode_size_bytes(get_Load_mode(load));
 
 	ir_node   *node = start;
-	mark_node_optimize_iteration(node, wenv);
 	changes_t  res  = NO_CHANGES;
 	for (;;) {
 		ldst_info_t *node_info = (ldst_info_t *)get_irn_link(node);
@@ -714,9 +713,6 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 				ptr, store_type, store_size,
 				env->ptr, load_type, load_size);
 			
-			mark_node_optimize_iteration(get_Store_mem(node), wenv);
-			mark_node_optimize_iteration(skip_Proj(get_Store_mem(node)), wenv);
-
 			/* if the might be an alias, we cannot pass this Store */
 			if (rel != ir_no_alias || barrier_blocked(get_Store_mem(node), wenv))
 				break;
@@ -724,9 +720,6 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 		} else if (is_Load(node)) {
 			/* try load-after-load */
 			changes_t changes = try_load_after_load(env, node);
-
-			mark_node_optimize_iteration(get_Load_mem(node), wenv);
-			mark_node_optimize_iteration(skip_Proj(get_Load_mem(node)), wenv);
 
 			if (changes != NO_CHANGES)
 				return changes | res;
@@ -766,8 +759,6 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 				dst, type, size,
 				env->ptr, load_type, load_size);
 			/* possible alias => we cannot continue */
-			mark_node_optimize_iteration(get_CopyB_mem(node), wenv);
-			mark_node_optimize_iteration(skip_Proj(get_CopyB_mem(node)), wenv);
 			if (rel != ir_no_alias)
 				break;
 			if(barrier_blocked(get_CopyB_mem(node), wenv)) {
@@ -775,8 +766,6 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 			}
 			node = skip_Proj(get_CopyB_mem(node));
 		} else if (is_irn_const_memory(node)) {
-			mark_node_optimize_iteration(get_memop_mem(node), wenv);
-			mark_node_optimize_iteration(skip_Proj(get_memop_mem(node)), wenv);
 
 			if(barrier_blocked(get_memop_mem(node), wenv)) {
 				break;
@@ -796,6 +785,7 @@ static changes_t follow_load_mem_chain(track_load_env_t *env, ir_node *start, wa
 	}
 
 	if (is_Sync(node)) {
+		mark_node_optimize_iteration(node, wenv);
 		/* handle all Sync predecessors */
 		foreach_irn_in(node, i, in) {
 			if(barrier_blocked(in, wenv)) {
@@ -966,7 +956,6 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 	ir_node     *block = get_nodes_block(store);
 
 	ir_node *node = start;
-	mark_node_optimize_iteration(node, wenv);
 
 	while (node != store) {
 		ldst_info_t *node_info = (ldst_info_t *)get_irn_link(node);
@@ -1058,8 +1047,6 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 				store_ptr, store_type, store_size,
 				ptr, type, size);
 
-			mark_node_optimize_iteration(get_Store_mem(node), wenv);
-			mark_node_optimize_iteration(skip_Proj(get_Store_mem(node)), wenv);
 			/* if the might be an alias, we cannot pass this Store */
 			if (rel != ir_no_alias)
 				break;
@@ -1075,8 +1062,6 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 				load_ptr, load_type, load_size,
 				ptr, type, size);
 
-			mark_node_optimize_iteration(get_Load_mem(node), wenv);
-			mark_node_optimize_iteration(skip_Proj(get_Load_mem(node)), wenv);
 
 			if (rel != ir_no_alias)
 				break;
@@ -1113,6 +1098,7 @@ static changes_t follow_store_mem_chain(ir_node *store, ir_node *start,
 
 	if (is_Sync(node)) {
 		/* handle all Sync predecessors */
+		mark_node_optimize_iteration(node, wenv);
 		foreach_irn_in(node, i, in) {
 			if(barrier_blocked(in, wenv)) {
 				continue;
@@ -1193,7 +1179,6 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 	ir_node  *block = get_nodes_block(copyb);
 
 	ir_node *node = start;
-	mark_node_optimize_iteration(node, wenv);
 
 	while (node != copyb) {
 		ldst_info_t *node_info = (ldst_info_t *)get_irn_link(node);
@@ -1233,8 +1218,6 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 			unsigned  store_size  = get_mode_size_bytes(get_irn_mode(store_value));
 			/* check if we can pass through this store */
 
-			mark_node_optimize_iteration(get_Store_mem(node), wenv);
-			mark_node_optimize_iteration(skip_Proj(get_Store_mem(node)), wenv);
 
 			ir_alias_relation src_rel = get_alias_relation(
 				store_ptr, store_type, store_size,
@@ -1258,9 +1241,6 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 				load_ptr, load_type, load_size,
 				dst, type, size);
 
-			mark_node_optimize_iteration(get_Load_mem(node), wenv);
-			mark_node_optimize_iteration(skip_Proj(get_Load_mem(node)), wenv);
-
 			if (rel != ir_no_alias)
 				break;
 
@@ -1273,9 +1253,6 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 			ir_node  *pred_src  = get_CopyB_src(node);
 			ir_type  *pred_type = get_CopyB_type(node);
 			unsigned  pred_size = get_type_size(pred_type);
-
-			mark_node_optimize_iteration(get_CopyB_mem(node), wenv);
-			mark_node_optimize_iteration(skip_Proj(get_CopyB_mem(node)), wenv);
 
 			if (src == pred_dst && size == pred_size
 			    && get_CopyB_volatility(node) == volatility_non_volatile) {
@@ -1328,6 +1305,7 @@ static changes_t follow_copyb_mem_chain(ir_node *copyb, ir_node *start,
 
 	if (is_Sync(node)) {
 		/* handle all Sync predecessors */
+		mark_node_optimize_iteration(node, wenv);
 		foreach_irn_in(node, i, in) {
 			if(barrier_blocked(in, wenv)) {
 				continue;
@@ -1623,8 +1601,6 @@ static void do_load_store_optimize(ir_node *n, void *env)
 {
 	walk_env_t *wenv = (walk_env_t *)env;
 	ir_nodehashmap_init(&wenv->iteration_map);
-
-	mark_node_optimize_iteration(n, wenv);
 
 
 	switch (get_irn_opcode(n)) {
