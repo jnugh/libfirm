@@ -54,8 +54,7 @@ static void parallelize_load(parallelize_info *pi, ir_node *irn)
 				parallelize_load(pi, mem);
 				return;
 			} else if (is_Store(pred) &&
-	                           get_Store_volatility(pred) == volatility_non_volatile &&
-							   !is_Phi(get_irn_out(irn, 0))) {
+	                           get_Store_volatility(pred) == volatility_non_volatile) {
 				ir_type *org_type   = pi->origin_type;
 				unsigned org_size   = pi->origin_size;
 				ir_node *org_ptr    = pi->origin_ptr;
@@ -277,9 +276,6 @@ static void walker(ir_node *proj, void *env)
 		parallelize_load(&pi, pred);
 	} else if (is_Store(mem_op)) {
 		if (get_Store_volatility(mem_op) != volatility_non_volatile) return;
-		if (is_Phi(get_irn_out(proj, 0))) {
-			return;
-		}
 
 		block = get_nodes_block(mem_op);
 		pred  = get_Store_mem(mem_op);

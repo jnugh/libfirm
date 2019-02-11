@@ -7069,6 +7069,7 @@ static ir_node *transform_node_Mux(ir_node *n)
  */
 static ir_node *transform_node_Sync(ir_node *n)
 {
+	return n;
 	int arity = get_Sync_n_preds(n);
 
 	for (int i = 0; i < arity;) {
@@ -7444,29 +7445,7 @@ ir_node *predict_load(ir_node *ptr, ir_mode *mode)
 	return NULL;
 }
 
-static ir_node *transform_node_Load(ir_node *n)
-{
-	/* don't touch volatile loads */
-	if (get_Load_volatility(n) == volatility_is_volatile)
-		return n;
-
-	/* are we loading from a global constant entity? */
-	ir_node *ptr  = get_Load_ptr(n);
-	ir_node *mem  = get_Load_mem(n);
-	ir_mode *mode = get_Load_mode(n);
-	ir_node *val  = predict_load(ptr, mode);
-	if (val != NULL)
-		return create_load_replacement_tuple(n, mem, val);
-
-	const ir_node *confirm;
-	if (value_not_null(ptr, &confirm) && confirm == NULL)
-		set_irn_pinned(n, false);
-
-	/* if our memory predecessor is a load from the same address, then reuse the
-	 * previous result */
-	if (!is_Proj(mem))
-		return n;
-	ir_node *mem_pred = get_Proj_pred(mem);
+static ir_node *transform_node_Load_mem(ir_node *mem_pred, ir_node *n, ir_node *ptr, ir_node *mem, ir_mode *mode) {
 	if (is_Load(mem_pred)) {
 		ir_node *pred_load = mem_pred;
 
@@ -7515,6 +7494,48 @@ static ir_node *transform_node_Load(ir_node *n)
 	}
 
 	return n;
+}
+
+static ir_node *transform_node_Load(ir_node *n)
+{
+	/* don't touch volatile loads */
+	if (get_Load_volatility(n) == volatility_is_volatile)
+		return n;
+
+	/* are we loading from a global constant entity? */
+	ir_node *ptr  = get_Load_ptr(n);
+	ir_node *mem  = get_Load_mem(n);
+	ir_mode *mode = get_Load_mode(n);
+	ir_node *val  = predict_load(ptr, mode);
+	if (val != NULL)
+		return create_load_replacement_tuple(n, mem, val);
+
+	const ir_node *confirm;
+	if (value_not_null(ptr, &confirm) && confirm == NULL)
+		set_irn_pinned(n, false);
+
+	/* if our memory predecessor is a load from the same address, then reuse the
+	 * previous result */
+
+	if (is_Sync(mem)) {
+		ir_node *sync_mem_pred;
+		ir_node *opt_sync_mem_pred;
+		foreach_irn_in(mem, i, pred) {
+			if(is_Proj(pred)) {
+				sync_mem_pred = get_Proj_pred(pred);
+				opt_sync_mem_pred = transform_node_Load_mem(sync_mem_pred, n, ptr, mem, mode);
+				if(sync_mem_pred != opt_sync_mem_pred) {
+					return opt_sync_mem_pred;
+				}
+			}
+		}
+		return n;
+	} else if(is_Proj(mem)) {
+		ir_node *mem_pred = get_Proj_pred(mem);
+		return transform_node_Load_mem(mem_pred, n, ptr, mem, mode);
+	} else {
+		return n;
+	}
 }
 
 static ir_node *transform_node_Store(ir_node *n)
