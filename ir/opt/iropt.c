@@ -7069,7 +7069,6 @@ static ir_node *transform_node_Mux(ir_node *n)
  */
 static ir_node *transform_node_Sync(ir_node *n)
 {
-	return n;
 	int arity = get_Sync_n_preds(n);
 
 	for (int i = 0; i < arity;) {

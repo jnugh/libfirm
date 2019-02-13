@@ -163,9 +163,13 @@ void set_irn_in(ir_node *const node, int const arity, ir_node *const *const in)
 	}
 
 	if (arity != (int)ARR_LEN(*pOld_in) - 1) {
-		ir_node * block = (*pOld_in)[0];
-		*pOld_in = NEW_ARR_D(ir_node*, get_irg_obstack(irg), arity + 1);
-		(*pOld_in)[0] = block;
+		if(node->op->opar == oparity_dynamic) {
+			*pOld_in = ARR_RESIZE(ir_node*, *pOld_in, arity + 1);
+		} else {
+			ir_node * block = (*pOld_in)[0];
+			*pOld_in = NEW_ARR_D(ir_node*, get_irg_obstack(irg), arity + 1);
+			(*pOld_in)[0] = block;
+		}
 	}
 	fix_backedges(get_irg_obstack(irg), node);
 
