@@ -44,7 +44,6 @@ typedef struct mem_dom_env {
 
 void set_Block_idom(ir_node *bl, ir_node *n);
 
-int get_Block_dom_depth(const ir_node *bl);
 void set_Block_dom_depth(ir_node *bl, int depth);
 
 int get_Block_dom_pre_num(const ir_node *bl);
@@ -52,7 +51,6 @@ void set_Block_dom_pre_num(ir_node *bl, int num);
 
 void set_Block_ipostdom(ir_node *bl, ir_node *n);
 
-int get_Block_postdom_depth(const ir_node *bl);
 void set_Block_postdom_depth(ir_node *bl, int depth);
 
 int get_Block_postdom_pre_num(const ir_node *bl);
