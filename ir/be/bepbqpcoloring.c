@@ -52,10 +52,10 @@
 #include "pbqp_node.h"
 #include "pbqp_edge_t.h"
 
-#define TIMER                 0
-#define PRINT_RPEO            0
-#define USE_BIPARTIT_MATCHING 0
-#define DO_USEFUL_OPT         1
+#define TIMER                  0
+#define PRINT_RPEO             0
+#define USE_BIPARTITE_MATCHING 1
+#define DO_USEFUL_OPT          1
 
 
 static bool use_exec_freq     = true;
@@ -157,7 +157,7 @@ static void insert_ife_edge(be_pbqp_alloc_env_t *pbqp_alloc_env, ir_node *src_no
 		pbqp_alloc_env->ife_edge_num[get_irn_idx(src_node)]++;
 		pbqp_alloc_env->ife_edge_num[get_irn_idx(trg_node)]++;
 
-#if DO_USEFUL_OPT || USE_BIPARTIT_MATCHING
+#if DO_USEFUL_OPT || USE_BIPARTITE_MATCHING
 		/* do useful optimization to speed up pbqp solving (we can do this because we know our matrix) */
 		if (get_free_regs(restr_nodes, cls, src_node) == 1 && get_free_regs(restr_nodes, cls, trg_node) == 1) {
 			assert(vector_get_min_index(get_node(pbqp, get_irn_idx(src_node))->costs) !=
@@ -207,7 +207,7 @@ static void insert_afe_edge(be_pbqp_alloc_env_t *pbqp_alloc_env, ir_node *src_no
 		} else {
 			afe_matrix = pbqp_alloc_env->aff_matrix_template;
 		}
-#if DO_USEFUL_OPT || USE_BIPARTIT_MATCHING
+#if DO_USEFUL_OPT || USE_BIPARTITE_MATCHING
 		/* do useful optimization to speed up pbqp solving */
 		if (get_free_regs(restr_nodes, cls, src_node) == 1 && get_free_regs(restr_nodes, cls, trg_node) == 1) {
 			return;
@@ -282,7 +282,7 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 	pbqp_t                      *pbqp_inst          = pbqp_alloc_env->pbqp_inst;
 	pbqp_node_t                **temp_list          = NEW_ARR_F(pbqp_node_t*, 0);
 	ir_nodeset_t                 live_nodes;
-#if USE_BIPARTIT_MATCHING
+#if USE_BIPARTITE_MATCHING
 	int                         *assignment         = ALLOCAN(int, cls->n_regs);
 #else
 	unsigned                    *restr_nodes        = pbqp_alloc_env->restr_nodes;
@@ -306,13 +306,13 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 			if (!arch_irn_consider_in_reg_alloc(cls, value))
 				continue;
 
-			/* create pbqp source node if it dosn't exist */
+			/* create pbqp source node if it doesn't exist */
 			if (!get_node(pbqp_inst, get_irn_idx(value)))
 				create_pbqp_node(pbqp_alloc_env, value);
 
 			/* create nodes and interference edges */
 			foreach_ir_nodeset(&live_nodes, live, iter) {
-				/* create pbqp source node if it dosn't exist */
+				/* create pbqp source node if it doesn't exist */
 				if (!get_node(pbqp_inst, get_irn_idx(live)))
 					create_pbqp_node(pbqp_alloc_env, live);
 
@@ -329,11 +329,11 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 			be_liveness_transfer(cls, irn, &live_nodes);
 		}
 
-#if USE_BIPARTIT_MATCHING
+#if USE_BIPARTITE_MATCHING
 		if (get_irn_mode(irn) == mode_T) {
 			unsigned     clique_size         = 0;
 			unsigned     n_alloc             = 0;
-			pbqp_node   *clique[cls->n_regs];
+			pbqp_node_t *clique[cls->n_regs];
 			bipartite_t *bp                  = bipartite_new(cls->n_regs, cls->n_regs);
 
 			/* add all proj after a perm to clique */
@@ -349,9 +349,9 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 
 				if (is_Perm_Proj(proj)) {
 					/* add proj to clique */
-					pbqp_node *clique_member = get_node(pbqp_inst,proj->node_idx);
-					vector    *costs         = clique_member->costs;
-					unsigned   idx           = 0;
+					pbqp_node_t *clique_member = get_node(pbqp_inst,proj->node_idx);
+					vector_t    *costs         = clique_member->costs;
+					unsigned     idx           = 0;
 
 					clique[clique_size] = clique_member;
 
@@ -369,15 +369,15 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 
 			if (clique_size > 0) {
 				for (size_t i = ARR_LEN(temp_list); i-- > 0;) {
-					pbqp_node *clique_candidate  = temp_list[i];
-					unsigned   idx               = 0;
-					bool       isMember          = true;
+					pbqp_node_t *clique_candidate  = temp_list[i];
+					unsigned     idx               = 0;
+					bool         isMember          = true;
 
 					/* clique size not bigger then register class size */
 					if (clique_size >= cls->n_regs) break;
 
 					for (idx = 0; idx < clique_size; idx++) {
-						pbqp_node *member = clique[idx];
+						pbqp_node_t *member = clique[idx];
 
 						if (member == clique_candidate) {
 							isMember = false;
@@ -396,7 +396,7 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 					/* add candidate to clique */
 					clique[clique_size] = clique_candidate;
 
-					vector *costs = clique_candidate->costs;
+					vector_t *costs = clique_candidate->costs;
 					for (idx = 0; idx < costs->len; idx++) {
 						if (costs->entries[idx].data != INF_COSTS) {
 							bipartite_add(bp, clique_size, idx);
@@ -414,9 +414,8 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 			/* assign colors */
 			unsigned nodeIdx = 0;
 			for (nodeIdx = 0; nodeIdx < clique_size; nodeIdx++) {
-				vector *costs = clique[nodeIdx]->costs;
-				int     idx;
-				for (idx = 0; idx < (int)costs->len; idx++) {
+				vector_t *costs = clique[nodeIdx]->costs;
+				for (int idx = 0; idx < (int)costs->len; idx++) {
 					if (assignment[nodeIdx] != idx) {
 						costs->entries[idx].data = INF_COSTS;
 					}
@@ -449,9 +448,9 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 				if (last_element == NULL)
 					continue;
 
-				/* check if proj has an if edge to last_element (at this time pbqp contains only if edges) */
+				/* check if proj has an interference edge to last_element (at this time pbqp contains only interference edges) */
 				if (get_edge(pbqp_inst, proj->node_idx, last_element->node_idx) == NULL && get_edge(pbqp_inst, last_element->node_idx, proj->node_idx) == NULL) {
-					allHaveIFEdges = false; /* there is no if edge between proj and last_element */
+					allHaveIFEdges = false; /* there is no interference edge between proj and last_element */
 				}
 			}
 
@@ -503,7 +502,7 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 #endif
 	}
 
-	/* add the temp rpeo list of this block to the global reverse perfect
+	/* add the temp peo list of this block to the global reverse perfect
 	 * elimination order list */
 	for (size_t i = ARR_LEN(temp_list); i-- > 0;) {
 		if (temp_list[i] == NULL)
@@ -514,7 +513,7 @@ static void create_pbqp_coloring_instance(ir_node *block, void *data)
 	/* free reserved memory */
 	ir_nodeset_destroy(&live_nodes);
 	DEL_ARR_F(temp_list);
-#if USE_BIPARTIT_MATCHING
+#if USE_BIPARTITE_MATCHING
 #else
 	DEL_ARR_F(sorted_list);
 	del_pqueue(queue);
